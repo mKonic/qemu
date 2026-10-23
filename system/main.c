@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include "qemu-main.h"
 #include "qemu/main-loop.h"
+#include "qemu/plugin.h"
 #include "system/replay.h"
 #include "system/system.h"
 
@@ -56,8 +57,9 @@ static void *qemu_default_main(void *opaque)
      * HackiOS: out without the libraries' destructors. QEMU has cleaned up and flushed its disks;
      * what exit() would do on top is unload the host's EGL (NVIDIA's) under gfxstream's sync thread,
      * which is still running a command -- a segfault, and a core dump of the whole guest's memory,
-     * at every exit.
+     * at every exit. The plugins' exit callbacks, which exit() would run, are run here.
      */
+    qemu_plugin_atexit_cb();
     fflush(NULL);
     _exit(status);
 }
