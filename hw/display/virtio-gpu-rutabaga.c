@@ -265,7 +265,12 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
         }
     }
 
-    if (!found) {
+    /*
+     * HackiOS: only the resource the scanout shows is read, and into the scanout's own picture (see
+     * set_scanout: the guest shows its frames in turn from two resources, and the scanout keeps one
+     * picture); the display is told of the flushed rectangle.
+     */
+    if (!found || !scanout->ds || scanout->resource_id != rf.resource_id) {
         return;
     }
 
@@ -276,14 +281,18 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
     transfer.h = res->height;
     transfer.d = 1;
 
-    transfer_iovec.iov_base = pixman_image_get_data(res->image);
+    transfer_iovec.iov_base = pixman_image_get_data(scanout->ds->image);
     transfer_iovec.iov_len = res->width * res->height * 4;
 
     result = rutabaga_resource_transfer_read(vr->rutabaga, 0,
                                              rf.resource_id, &transfer,
                                              &transfer_iovec);
     CHECK(!result, cmd);
-    qemu_console_update_full(scanout->con);
+    {
+        uint32_t x = MIN(rf.r.x, res->width), y = MIN(rf.r.y, res->height);
+        qemu_console_update(scanout->con, x, y, MIN(rf.r.width, res->width - x),
+                            MIN(rf.r.height, res->height - y));
+    }
 }
 
 static void
@@ -321,25 +330,56 @@ rutabaga_cmd_set_scanout(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
         return;
     }
 
+    /*
+     * HackiOS: a resource of the picture's size and format the scanout already has only takes its
+     * place; its frames are read into that picture when flushed. A new surface at every move made
+     * QEMU's D-Bus display drop the frames it had not sent yet -- all of them, at one move a frame.
+     */
+    if (scanout->ds && surface_width(scanout->ds) == res->width &&
+        surface_height(scanout->ds) == res->height &&
+        surface_format(scanout->ds) == virtio_gpu_get_pixman_format(res->format)) {
+        scanout->resource_id = ss.resource_id;
+        res->scanout_bitmask = ss.scanout_id;
+        vb->enable = 1;
+        return;
+    }
+
     if (!res->image) {
         pixman_format_code_t pformat;
         pformat = virtio_gpu_get_pixman_format(res->format);
         CHECK(pformat, cmd);
 
-        res->image = pixman_image_create_bits(pformat,
-                                              res->width,
-                                              res->height,
-                                              NULL, 0);
+        /*
+         * HackiOS: in memory a display can map (memfd), as virtio-gpu's 2D resources are: QEMU's
+         * D-Bus display then hands the picture over once (ScanoutMap) and each flush is a rectangle
+         * (UpdateMap), where it otherwise sent the whole frame's pixels over the socket every time.
+         */
+        {
+            Error *err = NULL;
+
+            res->share_handle = SHAREABLE_NONE;
+            if (!qemu_pixman_image_new_shareable(&res->image, &res->share_handle, "rutabaga scanout",
+                                                 pformat, res->width, res->height, res->width * 4, &err)) {
+                warn_report_err(err);
+                res->share_handle = SHAREABLE_NONE;
+                res->image = pixman_image_create_bits(pformat, res->width, res->height, NULL, 0);
+            }
+        }
         CHECK(res->image, cmd);
         pixman_image_ref(res->image);
     }
 
     vb->enable = 1;
 
-    /* realloc the surface ptr */
+    /*
+     * realloc the surface ptr. HackiOS: straight from one picture to the next -- through NULL, the
+     * console put up its "Display output is not active." placeholder for an instant, and a guest that
+     * shows its frames in turn from two resources made every frame flicker
+     */
     scanout->ds = qemu_create_displaysurface_pixman(res->image);
-    qemu_console_set_surface(scanout->con, NULL);
+    qemu_displaysurface_set_share_handle(scanout->ds, res->share_handle, 0);
     qemu_console_set_surface(scanout->con, scanout->ds);
+    scanout->resource_id = ss.resource_id;
     res->scanout_bitmask = ss.scanout_id;
 }
 
