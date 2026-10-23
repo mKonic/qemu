@@ -389,13 +389,33 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     cpu->neg.can_do_io = true;
 
     TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
-    s.cflags = curr_cflags(cpu);
+    uint32_t cflags = curr_cflags(cpu);
 
-    if (check_for_breakpoints(cpu, s.pc, &s.cflags)) {
+    if (check_for_breakpoints(cpu, s.pc, &cflags)) {
         cpu_loop_exit(cpu);
     }
 
-    tb = tb_lookup(cpu, s);
+    /*
+     * HackiOS: the jump cache is tried with the state's fields as they are, and the state is put
+     * together whole only on a miss. Whole, GCC copied it with a 16-byte load right after it had
+     * been written in pieces (returned through memory, then cflags): a store-forwarding stall on
+     * every lookup, ~40% of this helper -- which an iOS guest calls at most block ends, its calls
+     * and returns being indirect.
+     */
+    {
+        vaddr pc = s.pc;
+        uint64_t cs_base = s.cs_base;
+        uint32_t flags = s.flags;
+        CPUJumpCache *jc = cpu->tb_jmp_cache;
+        uint32_t hash = tb_jmp_cache_hash_func(pc);
+
+        tb = qatomic_read(&jc->array[hash].tb);
+        if (!(tb && jc->array[hash].pc == pc && tb->cs_base == cs_base && tb->flags == flags &&
+              tb_cflags(tb) == cflags)) {
+            TCGTBCPUState t = { .pc = pc, .flags = flags, .cflags = cflags, .cs_base = cs_base };
+            tb = tb_lookup(cpu, t);
+        }
+    }
     if (tb == NULL) {
         return tcg_code_gen_epilogue;
     }
