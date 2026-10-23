@@ -52,7 +52,14 @@ static void *qemu_default_main(void *opaque)
     bql_unlock();
     replay_mutex_unlock();
 
-    exit(status);
+    /*
+     * HackiOS: out without the libraries' destructors. QEMU has cleaned up and flushed its disks;
+     * what exit() would do on top is unload the host's EGL (NVIDIA's) under gfxstream's sync thread,
+     * which is still running a command -- a segfault, and a core dump of the whole guest's memory,
+     * at every exit.
+     */
+    fflush(NULL);
+    _exit(status);
 }
 
 int (*qemu_main)(void);
