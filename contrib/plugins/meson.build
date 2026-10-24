@@ -12,6 +12,7 @@ contrib_plugins = [
 'ips.c',
 'sampler.c',
 'stoptrigger.c',
+'tbstat.c',
 'traps.c',
 'uftrace.c',
 ]
