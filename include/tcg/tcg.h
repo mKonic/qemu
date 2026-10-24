@@ -447,6 +447,26 @@ static inline bool temp_readonly(TCGTemp *ts)
 
 extern __thread TCGContext *tcg_ctx;
 extern const void *tcg_code_gen_epilogue;
+
+/*
+ * The jump-cache probe of helper_lookup_tb_ptr(), as host code that TBs jump
+ * to (tcg_lookup_stub, NULL when the backend does not provide it).  What it
+ * needs to know of the guest is here, set by translator_set_lookup_state().
+ */
+typedef struct TCGLookupDesc {
+    intptr_t pc;            /* env offsets: the next pc, */
+    intptr_t flags;         /* the TB flags (32 bits) */
+    intptr_t cs_base;       /* and cs_base (64) it is looked up with */
+    uint32_t flags_clear;   /* a miss unless these flags are clear */
+    uint32_t flags_set;     /* and these set */
+    uint32_t shift;         /* tb_jmp_cache_hash_func(): t = pc ^ (pc >> shift), */
+    uint64_t page_mask;     /* index ((t >> shift) & page_mask) | (t & addr_mask) */
+    uint64_t addr_mask;
+    const void *miss;       /* helper_lookup_tb_ptr() */
+} TCGLookupDesc;
+
+extern TCGLookupDesc tcg_lookup_desc;
+extern const void *tcg_lookup_stub;
 extern ptrdiff_t tcg_splitwx_diff;
 extern TCGv_env tcg_env;
 

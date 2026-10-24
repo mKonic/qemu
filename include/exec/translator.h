@@ -162,6 +162,32 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
 bool translator_use_goto_tb(DisasContextBase *db, vaddr dest);
 
 /**
+ * translator_set_lookup_state
+ * @pc: offset in env of the next pc (64 bits)
+ * @flags: offset in env of the TB flags the next TB is looked up with (32)
+ * @cs_base: offset in env of its cs_base (64)
+ * @flags_clear: flags that must be clear for env to hold that state
+ * @flags_set: flags that must be set for it
+ *
+ * For a target whose get_tb_cpu_state() is, while @flags_clear are clear
+ * and @flags_set set, these three fields of env as they are: lets
+ * translator_lookup_and_goto_ptr() use the backend's tcg_lookup_stub.
+ * The same values every call.
+ */
+void translator_set_lookup_state(intptr_t pc, intptr_t flags, intptr_t cs_base,
+                                 uint32_t flags_clear, uint32_t flags_set);
+
+/**
+ * translator_lookup_and_goto_ptr
+ *
+ * tcg_gen_lookup_and_goto_ptr(), through tcg_lookup_stub when the target
+ * has set its state and the backend has one: a jump-cache hit then goes to
+ * the next TB without a call out of generated code, in less code at the
+ * end of the TB than the call.
+ */
+void translator_lookup_and_goto_ptr(void);
+
+/**
  * translator_io_start
  * @db: Disassembly context
  *

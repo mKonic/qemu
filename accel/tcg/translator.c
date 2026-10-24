@@ -20,6 +20,8 @@
 #include "internal-common.h"
 #include "disas/disas.h"
 #include "tb-internal.h"
+#include "tb-hash.h"
+#include "exec/helper-proto-common.h"
 
 static void set_can_do_io(DisasContextBase *db, bool val)
 {
@@ -106,6 +108,47 @@ static void gen_tb_end(const TranslationBlock *tb, uint32_t cflags,
 bool translator_is_same_page(const DisasContextBase *db, vaddr addr)
 {
     return ((addr ^ db->pc_first) & TARGET_PAGE_MASK) == 0;
+}
+
+void translator_set_lookup_state(intptr_t pc, intptr_t flags, intptr_t cs_base,
+                                 uint32_t flags_clear, uint32_t flags_set)
+{
+    TCGLookupDesc *d = &tcg_lookup_desc;
+
+    if (qatomic_read(&d->miss)) {
+        return;
+    }
+    d->pc = pc;
+    d->flags = flags;
+    d->cs_base = cs_base;
+    d->flags_clear = flags_clear;
+    d->flags_set = flags_set;
+    /* tb_jmp_cache_hash_func() */
+#ifdef CONFIG_SOFTMMU
+    d->shift = TARGET_PAGE_BITS - TB_JMP_PAGE_BITS;
+    d->page_mask = TB_JMP_PAGE_MASK;
+    d->addr_mask = TB_JMP_ADDR_MASK;
+#else
+    d->shift = TB_JMP_CACHE_BITS;
+    d->page_mask = 0;
+    d->addr_mask = TB_JMP_CACHE_SIZE - 1;
+#endif
+    qatomic_store_release(&d->miss, (const void *)helper_lookup_tb_ptr);
+}
+
+void translator_lookup_and_goto_ptr(void)
+{
+    /*
+     * As helper_lookup_tb_ptr() does: not when goto_tb is suppressed (one
+     * insn per TB, -d nochain) or each TB executed is logged.
+     */
+    if (!tcg_lookup_stub || !qatomic_read(&tcg_lookup_desc.miss) ||
+        (tcg_ctx->gen_tb->cflags & (CF_NO_GOTO_PTR | CF_NO_GOTO_TB)) ||
+        qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
+        tcg_gen_lookup_and_goto_ptr();
+        return;
+    }
+    tcg_gen_goto_ptr(tcg_constant_ptr(tcg_lookup_stub));
 }
 
 bool translator_use_goto_tb(DisasContextBase *db, vaddr dest)

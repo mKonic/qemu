@@ -36,6 +36,8 @@
 #include "qemu/timer.h"
 #include "exec/target_page.h"
 #include "exec/translation-block.h"
+#include "hw/core/cpu.h"
+#include "accel/tcg/tb-jmp-cache.h"
 #include "exec/tlb-common.h"
 #include "tcg/startup.h"
 #include "tcg/tcg-op-common.h"
@@ -244,6 +246,8 @@ unsigned int tcg_cur_ctxs;
 unsigned int tcg_max_ctxs;
 TCGv_env tcg_env;
 const void *tcg_code_gen_epilogue;
+TCGLookupDesc tcg_lookup_desc;
+const void *tcg_lookup_stub;
 ptrdiff_t tcg_splitwx_diff;
 
 #ifndef CONFIG_TCG_INTERPRETER

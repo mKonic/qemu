@@ -4443,6 +4443,100 @@ static const int tcg_target_callee_save_regs[] = {
      & ~(TCG_TARGET_STACK_ALIGN - 1))
 
 /* Generate global QEMU prologue and epilogue code */
+/*
+ * tcg_lookup_stub: what helper_lookup_tb_ptr() does on a jump-cache hit,
+ * without leaving generated code.  Entered by goto_ptr at the end of a TB,
+ * with env in TCG_AREG0, the guest state in env and the stack as for a
+ * helper call; every call-clobbered register is free.  A miss calls the
+ * helper and jumps where it says, as tcg_gen_lookup_and_goto_ptr() would.
+ */
+static void tcg_out_lookup_stub(TCGContext *s)
+{
+    const intptr_t cpu = -(intptr_t)sizeof(CPUState);
+    tcg_insn_unit *miss[16];
+    int n = 0;
+
+#define LOOKUP_MISS(cond) do {                              \
+        tcg_out_opc(s, OPC_JCC_long + (cond), 0, 0, 0);     \
+        miss[n++] = s->code_ptr;                            \
+        tcg_out32(s, 0);                                    \
+    } while (0)
+#define DESC(field) offsetof(TCGLookupDesc, field)
+
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUJumpCache, array[0]) != 16);
+    tcg_lookup_stub = tcg_splitwx_to_rx(s->code_ptr);
+
+    /* rax = pc, r10d = flags */
+    tcg_out_movi(s, TCG_TYPE_PTR, TCG_REG_R11, (uintptr_t)&tcg_lookup_desc);
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_R8, TCG_REG_R11, DESC(pc));
+    tcg_out_modrm_sib_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_EAX, TCG_AREG0, TCG_REG_R8, 0, 0);
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_R9, TCG_REG_R11, DESC(flags));
+    tcg_out_modrm_sib_offset(s, OPC_MOVL_GvEv, TCG_REG_R10, TCG_AREG0, TCG_REG_R9, 0, 0);
+    tcg_out_modrm_offset(s, OPC_TESTL, TCG_REG_R10, TCG_REG_R11, DESC(flags_clear));
+    LOOKUP_MISS(JCC_JNE);
+    tcg_out_mov(s, TCG_TYPE_I32, TCG_REG_EDX, TCG_REG_R10);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_AND << 3), TCG_REG_EDX, TCG_REG_R11, DESC(flags_set));
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3), TCG_REG_EDX, TCG_REG_R11, DESC(flags_set));
+    LOOKUP_MISS(JCC_JNE);
+
+    /* rsi = &jc->array[hash] */
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv, TCG_REG_ECX, TCG_REG_R11, DESC(shift));
+    tcg_out_mov(s, TCG_TYPE_I64, TCG_REG_EDX, TCG_REG_EAX);
+    tcg_out_modrm(s, OPC_SHIFT_cl + P_REXW, SHIFT_SHR, TCG_REG_EDX);
+    tgen_arithr(s, ARITH_XOR + P_REXW, TCG_REG_EDX, TCG_REG_EAX);
+    tcg_out_mov(s, TCG_TYPE_I64, TCG_REG_ESI, TCG_REG_EDX);
+    tcg_out_modrm(s, OPC_SHIFT_cl + P_REXW, SHIFT_SHR, TCG_REG_ESI);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_AND << 3) + P_REXW, TCG_REG_ESI, TCG_REG_R11, DESC(page_mask));
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_AND << 3) + P_REXW, TCG_REG_EDX, TCG_REG_R11, DESC(addr_mask));
+    tgen_arithr(s, ARITH_OR + P_REXW, TCG_REG_ESI, TCG_REG_EDX);
+    tcg_out_shifti(s, SHIFT_SHL + P_REXW, TCG_REG_ESI, 4);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_ADD << 3) + P_REXW, TCG_REG_ESI, TCG_AREG0,
+                         cpu + offsetof(CPUState, tb_jmp_cache));
+
+    /* tb_lookup()'s test of the entry: rdx = tb */
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_EDX, TCG_REG_ESI,
+                         offsetof(CPUJumpCache, array[0].tb));
+    tcg_out_modrm(s, OPC_TESTL + P_REXW, TCG_REG_EDX, TCG_REG_EDX);
+    LOOKUP_MISS(JCC_JE);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3) + P_REXW, TCG_REG_EAX, TCG_REG_ESI,
+                         offsetof(CPUJumpCache, array[0].pc));
+    LOOKUP_MISS(JCC_JNE);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3), TCG_REG_R10, TCG_REG_EDX,
+                         offsetof(TranslationBlock, flags));
+    LOOKUP_MISS(JCC_JNE);
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_R8, TCG_REG_R11, DESC(cs_base));
+    tcg_out_modrm_sib_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_EAX, TCG_AREG0, TCG_REG_R8, 0, 0);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3) + P_REXW, TCG_REG_EAX, TCG_REG_EDX,
+                         offsetof(TranslationBlock, cs_base));
+    LOOKUP_MISS(JCC_JNE);
+    /* curr_cflags(), but when single-stepping (no goto_ptr then) */
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv, TCG_REG_EAX, TCG_REG_EDX,
+                         offsetof(TranslationBlock, cflags));
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3), TCG_REG_EAX, TCG_AREG0,
+                         cpu + offsetof(CPUState, tcg_cflags));
+    LOOKUP_MISS(JCC_JNE);
+    /* check_for_breakpoints() */
+    tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_EAX, TCG_AREG0,
+                         cpu + offsetof(CPUState, breakpoints.tqh_first));
+    tcg_out_modrm(s, OPC_TESTL + P_REXW, TCG_REG_EAX, TCG_REG_EAX);
+    LOOKUP_MISS(JCC_JNE);
+
+    QEMU_BUILD_BUG_ON(sizeof_field(CPUState, neg.can_do_io) != 1);
+    tcg_out_modrm_offset(s, OPC_MOVB_EvIz, 0, TCG_AREG0, cpu + offsetof(CPUState, neg.can_do_io));
+    tcg_out8(s, 1);
+    tcg_out_modrm_offset(s, OPC_GRP5, EXT5_JMPN_Ev, TCG_REG_EDX, offsetof(TranslationBlock, tc.ptr));
+
+    /* miss: r11 still holds the descriptor */
+    for (int i = 0; i < n; i++) {
+        tcg_patch32(miss[i], s->code_ptr - (miss[i] + 4));
+    }
+    tcg_out_mov(s, TCG_TYPE_PTR, tcg_target_call_iarg_regs[0], TCG_AREG0);
+    tcg_out_modrm_offset(s, OPC_GRP5, EXT5_CALLN_Ev, TCG_REG_R11, DESC(miss));
+    tcg_out_modrm(s, OPC_GRP5, EXT5_JMPN_Ev, TCG_REG_EAX);
+#undef DESC
+#undef LOOKUP_MISS
+}
+
 static void tcg_target_qemu_prologue(TCGContext *s)
 {
     int i, stack_addend;
@@ -4497,6 +4591,8 @@ static void tcg_target_qemu_prologue(TCGContext *s)
         tcg_out_pop(s, tcg_target_callee_save_regs[i]);
     }
     tcg_out_opc(s, OPC_RET, 0, 0, 0);
+
+    tcg_out_lookup_stub(s);
 }
 
 static void tcg_out_tb_start(TCGContext *s)
