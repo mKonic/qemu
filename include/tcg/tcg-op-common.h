@@ -85,6 +85,16 @@ void tcg_gen_goto_tb(unsigned idx);
  */
 void tcg_gen_lookup_and_goto_ptr(void);
 
+/**
+ * tcg_gen_goto_ptr() - jump to host code
+ * @ptr: the host address of a TB's code, found by the caller
+ *
+ * Like the jump that ends tcg_gen_lookup_and_goto_ptr(), for a caller that
+ * has done the lookup itself (translator_lookup_and_goto_ptr()).  Not to be
+ * used in a TB compiled with CF_NO_GOTO_PTR.
+ */
+void tcg_gen_goto_ptr(TCGv_ptr ptr);
+
 void tcg_gen_plugin_cb(unsigned from);
 void tcg_gen_plugin_mem_cb(TCGv_i64 addr, unsigned meminfo);
 
