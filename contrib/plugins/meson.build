@@ -11,6 +11,7 @@ contrib_plugins = [
 'hwprofile.c',
 'ips.c',
 'jcsim.c',
+'rasim.c',
 'sampler.c',
 'stoptrigger.c',
 'tbstat.c',
