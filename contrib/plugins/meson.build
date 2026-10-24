@@ -10,6 +10,7 @@ contrib_plugins = [
 'howvec.c',
 'hwprofile.c',
 'ips.c',
+'jcsim.c',
 'sampler.c',
 'stoptrigger.c',
 'tbstat.c',
