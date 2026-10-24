@@ -2816,7 +2816,22 @@ static void vmsa_ttbr_write(CPUARMState *env, const ARMCPRegInfo *ri,
     if (cpreg_field_type(ri) == MO_64 &&
         extract64(raw_read(env, ri) ^ value, 48, 16) != 0) {
         ARMCPU *cpu = env_archcpu(env);
-        tlb_flush(CPU(cpu));
+
+        /*
+         * When this TTBR holds the ASID of the EL1&0 regime (TCR_EL1.A1
+         * clear, no E2H), the switch invalidates nothing of the address
+         * space left, and the upper half (TTBR1) is the same for all: keep
+         * the jump cache entries, tagged with the ASID in bits 48-63, which
+         * the lower half's addresses do not use.
+         */
+        if (tcg_enabled() &&
+            ri->fieldoffset == offsetof(CPUARMState, cp15.ttbr0_el[1]) &&
+            !(env->cp15.tcr_el[1] & TTBCR_A1) &&
+            !(arm_hcr_el2_eff(env) & HCR_E2H)) {
+            tlb_flush_switch_space(CPU(cpu), value & 0xffff000000000000ULL);
+        } else {
+            tlb_flush(CPU(cpu));
+        }
     }
     raw_write(env, ri, value);
 }
