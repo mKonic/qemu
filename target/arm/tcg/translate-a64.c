@@ -1806,8 +1806,8 @@ static void gen_ras_return(DisasContext *s, TCGv_i64 target)
 {
     TCGLabel *miss = gen_new_label(), *fill = gen_new_label();
     TCGv_i32 top = tcg_temp_new_i32(), t32 = tcg_temp_new_i32();
-    TCGv_i32 rgen = tcg_temp_new_i32(), rgen2 = tcg_temp_new_i32();
-    TCGv_i64 t64 = tcg_temp_new_i64(), ctb = tcg_temp_new_i64();
+    TCGv_i32 rgen2 = tcg_temp_new_i32();
+    TCGv_i64 rgen = tcg_temp_new_i64(), t64 = tcg_temp_new_i64(), ctb = tcg_temp_new_i64();
     TCGv_ptr ent, cptr = tcg_temp_new_ptr(), tc = tcg_temp_new_ptr();
     const TranslationBlock *tb = s->base.tb;
 
@@ -1831,9 +1831,9 @@ static void gen_ras_return(DisasContext *s, TCGv_i64 target)
     tcg_gen_extu_ptr_i64(t64, tc);
     tcg_gen_brcondi_i64(TCG_COND_NE, t64, 0, miss);
 
-    /* the caller's ret_tc, read like a seqlock */
+    /* the caller's ret_tc, read like a seqlock: the same write before and after */
     tcg_gen_trunc_i64_ptr(cptr, ctb);
-    tcg_gen_ld_i32(rgen, cptr, offsetof(TranslationBlock, ret_gen));
+    tcg_gen_ld_i64(rgen, cptr, offsetof(TranslationBlock, ret_gen));
     tcg_gen_ld_ptr(tc, cptr, offsetof(TranslationBlock, ret_tc));
     tcg_gen_ld_i32(t32, cptr, offsetof(TranslationBlock, ret_flags));
     tcg_gen_brcondi_i32(TCG_COND_NE, t32, tb->flags, fill);
@@ -1843,10 +1843,11 @@ static void gen_ras_return(DisasContext *s, TCGv_i64 target)
     tcg_gen_ld_i32(rgen2, tcg_env, offsetof(ArchCPU, parent_obj.tcg_cflags) -
                    offsetof(ArchCPU, env));
     tcg_gen_brcond_i32(TCG_COND_NE, t32, rgen2, fill);
-    tcg_gen_ld_i32(rgen2, cptr, offsetof(TranslationBlock, ret_gen));
-    tcg_gen_brcond_i32(TCG_COND_NE, rgen, rgen2, fill);
+    tcg_gen_ld_i64(t64, cptr, offsetof(TranslationBlock, ret_gen));
+    tcg_gen_brcond_i64(TCG_COND_NE, rgen, t64, fill);
+    tcg_gen_extrl_i64_i32(t32, rgen);
     tcg_gen_ld_i32(rgen2, tcg_constant_ptr(&tb_ret_generation), 0);
-    tcg_gen_brcond_i32(TCG_COND_NE, rgen, rgen2, fill);
+    tcg_gen_brcond_i32(TCG_COND_NE, t32, rgen2, fill);
     tcg_gen_st8_i32(tcg_constant_i32(1), tcg_env,
                     offsetof(ArchCPU, parent_obj.neg.can_do_io) - offsetof(ArchCPU, env));
     tcg_gen_goto_ptr(tc);

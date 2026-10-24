@@ -153,14 +153,14 @@ struct TranslationBlock {
      * For a TB that ends in a call: the code of the TB its callee returned
      * to last, and the state that TB was made for, so that a target's
      * return-address stack can go there without a lookup (see
-     * helper_lookup_ret_ptr()).  Valid while ret_gen is tb_ret_generation;
-     * written by any vCPU, read like a seqlock (ret_gen around the rest).
+     * helper_lookup_ret_ptr()).  Valid while the low half of ret_gen is
+     * tb_ret_generation.
      */
     const void *ret_tc;
     uint64_t ret_cs_base;
     uint32_t ret_flags;
     uint32_t ret_cflags;
-    uint32_t ret_gen;
+    uint64_t ret_gen;
 };
 
 /*
@@ -170,6 +170,35 @@ struct TranslationBlock {
  */
 extern uint32_t tb_ret_generation;
 #define TB_RET_GEN_WRITING 1
+
+/*
+ * ret_gen is read like a seqlock: a generation in the low half,
+ * a count of the writes in the high half, so that a reader that finds the
+ * word the same before and after has read one write's fields.  A writer
+ * claims the word (low half TB_RET_GEN_WRITING) with a compare-and-swap,
+ * and another vCPU that finds it claimed leaves it alone.
+ */
+static inline bool tb_pred_write_begin(uint64_t *word, uint64_t *count)
+{
+    uint64_t old = qatomic_read(word);
+
+    if ((uint32_t)old == TB_RET_GEN_WRITING) {
+        return false;
+    }
+    *count = (old >> 32) + 1;
+    if (qatomic_cmpxchg(word, old, *count << 32 | TB_RET_GEN_WRITING) != old) {
+        return false;
+    }
+    smp_wmb();
+    return true;
+}
+
+static inline void tb_pred_write_end(uint64_t *word, uint64_t count,
+                                     uint32_t gen)
+{
+    smp_wmb();
+    qatomic_set(word, (count + 1) << 32 | gen);
+}
 
 /* The alignment given to TranslationBlock during allocation. */
 #define CODE_GEN_ALIGN  16

@@ -440,18 +440,18 @@ const void *HELPER(lookup_ret_ptr)(CPUArchState *env, void *caller)
     TranslationBlock *ctb = caller;
     uint32_t gen = qatomic_read(&tb_ret_generation);
     TranslationBlock *tb = lookup_next_tb(env);
+    uint64_t count;
 
     if (tb == NULL) {
         return tcg_code_gen_epilogue;
     }
-    qatomic_set(&ctb->ret_gen, TB_RET_GEN_WRITING);
-    smp_wmb();
-    qatomic_set(&ctb->ret_tc, tb->tc.ptr);
-    qatomic_set(&ctb->ret_cs_base, tb->cs_base);
-    qatomic_set(&ctb->ret_flags, tb->flags);
-    qatomic_set(&ctb->ret_cflags, tb_cflags(tb));
-    smp_wmb();
-    qatomic_set(&ctb->ret_gen, gen);
+    if (tb_pred_write_begin(&ctb->ret_gen, &count)) {
+        qatomic_set(&ctb->ret_tc, tb->tc.ptr);
+        qatomic_set(&ctb->ret_cs_base, tb->cs_base);
+        qatomic_set(&ctb->ret_flags, tb->flags);
+        qatomic_set(&ctb->ret_cflags, tb_cflags(tb));
+        tb_pred_write_end(&ctb->ret_gen, count, gen);
+    }
     return tb->tc.ptr;
 }
 
