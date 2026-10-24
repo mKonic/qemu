@@ -712,6 +712,11 @@ static inline bool arm_is_psci_call(ARMCPU *cpu, int excp_type)
 bool arm_is_psci_call(ARMCPU *cpu, int excp_type);
 #endif
 /* Actually handle a PSCI call */
+/*
+ * Handle a native call (target/arm/tcg/native-calls.c) on the PSCI conduit,
+ * if the call is one: true if it was.
+ */
+bool arm_handle_native_call(ARMCPU *cpu);
 void arm_handle_psci_call(ARMCPU *cpu);
 
 /**

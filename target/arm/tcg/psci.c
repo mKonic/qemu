@@ -72,6 +72,10 @@ void arm_handle_psci_call(ARMCPU *cpu)
     int32_t ret = 0;
     int i;
 
+    if (arm_handle_native_call(cpu)) {
+        return;
+    }
+
     for (i = 0; i < 4; i++) {
         /*
          * All PSCI functions take explicit 32-bit or native int sized
