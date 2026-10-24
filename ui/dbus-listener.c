@@ -819,6 +819,23 @@ static void ddl_scanout(DBusDisplayListener *ddl)
         G_DBUS_CALL_FLAGS_NONE, DBUS_DEFAULT_TIMEOUT, NULL, NULL, NULL);
 }
 
+#ifndef WIN32
+static void dbus_update_map_cb(GObject *source_object,
+                               GAsyncResult *res,
+                               gpointer user_data)
+{
+    g_autoptr(GError) err = NULL;
+    DBusDisplayListener *ddl = user_data;
+
+    if (!qemu_dbus_display1_listener_unix_map_call_update_map_finish(
+            QEMU_DBUS_DISPLAY1_LISTENER_UNIX_MAP(source_object), res, &err)) {
+        error_report("Failed to call update map: %s", err->message);
+    }
+    qemu_console_hw_gl_block(ddl->dcl.con, false);
+    g_object_unref(ddl);
+}
+#endif
+
 static void dbus_gfx_update(DisplayChangeListener *dcl,
                             int x, int y, int w, int h)
 {
@@ -836,11 +853,19 @@ static void dbus_gfx_update(DisplayChangeListener *dcl,
             G_DBUS_CALL_FLAGS_NONE,
             DBUS_DEFAULT_TIMEOUT, NULL, NULL, NULL);
 #else
+        /*
+         * The client reads the rectangle from the shared memory when this
+         * call reaches it, and the device writes its next frame into that
+         * same memory: hold the device until the client has its copy, or it
+         * can read a picture that is half one frame and half the next.
+         */
+        qemu_console_hw_gl_block(ddl->dcl.con, true);
         qemu_dbus_display1_listener_unix_map_call_update_map(
             ddl->map_proxy,
             x, y, w, h,
             G_DBUS_CALL_FLAGS_NONE,
-            DBUS_DEFAULT_TIMEOUT, NULL, NULL, NULL);
+            DBUS_DEFAULT_TIMEOUT, NULL,
+            dbus_update_map_cb, g_object_ref(ddl));
 #endif
         return;
     }
