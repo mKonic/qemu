@@ -148,7 +148,28 @@ struct TranslationBlock {
     uintptr_t jmp_list_head;
     uintptr_t jmp_list_next[2];
     uintptr_t jmp_dest[2];
+
+    /*
+     * For a TB that ends in a call: the code of the TB its callee returned
+     * to last, and the state that TB was made for, so that a target's
+     * return-address stack can go there without a lookup (see
+     * helper_lookup_ret_ptr()).  Valid while ret_gen is tb_ret_generation;
+     * written by any vCPU, read like a seqlock (ret_gen around the rest).
+     */
+    const void *ret_tc;
+    uint64_t ret_cs_base;
+    uint32_t ret_flags;
+    uint32_t ret_cflags;
+    uint32_t ret_gen;
 };
+
+/*
+ * Changed whenever a TB stops being valid (invalidated, or the code buffer
+ * flushed): what TranslationBlock::ret_tc points to is to be trusted only
+ * while it is what it was then.  Even; TB_RET_GEN_WRITING is never one.
+ */
+extern uint32_t tb_ret_generation;
+#define TB_RET_GEN_WRITING 1
 
 /* The alignment given to TranslationBlock during allocation. */
 #define CODE_GEN_ALIGN  16

@@ -26,6 +26,7 @@
 #include "translate.h"
 #include "translate-a64.h"
 #include "tcg/tcg-op.h"
+#include "exec/helper-gen-common.h"
 #include "qemu/log.h"
 #include "semihosting/semihost.h"
 #include "cpregs.h"
@@ -1744,6 +1745,121 @@ static bool trans_B(DisasContext *s, arg_i *a)
     return true;
 }
 
+#define RAS_ENTRY(field)    offsetof(CPUARMState, ras[0].field)
+#define RAS_TB_GEN          (offsetof(ArchCPU, parent_obj.tb_ras_gen) - \
+                             offsetof(ArchCPU, env))
+
+/*
+ * Whether calls and returns use the return-address stack: not where the
+ * lookup of the next TB is not ours to skip (single-stepping, no goto_ptr)
+ * or depends on more than the TB state (BTI).
+ */
+static bool ras_usable(DisasContext *s)
+{
+    return !s->ss_active && !(tb_cflags(s->base.tb) & CF_NO_GOTO_PTR) &&
+           !dc_isar_feature(aa64_bti, s);
+}
+
+/* The return-address stack's entry at index *top* (0..15): env + top * 32 */
+static TCGv_ptr gen_ras_entry(TCGv_i32 top)
+{
+    TCGv_ptr ent = tcg_temp_new_ptr();
+
+    QEMU_BUILD_BUG_ON(sizeof(((CPUARMState *)0)->ras[0]) != 32);
+    tcg_gen_shli_i32(top, top, 5);
+    tcg_gen_ext_i32_ptr(ent, top);
+    tcg_gen_add_ptr(ent, ent, tcg_env);
+    return ent;
+}
+
+/*
+ * A call (BL, BLR) that returns to *link*: push it, with this TB when the
+ * address after the call is on the TB's page -- the TB's ret_tc is then the
+ * code of the page this TB was made from, whatever maps it -- and 0 when not.
+ */
+static void gen_ras_push(DisasContext *s, TCGv_i64 link)
+{
+    TCGv_i32 top = tcg_temp_new_i32();
+    TCGv_i64 gen = tcg_temp_new_i64();
+    TCGv_ptr ent;
+    bool same_page = translator_is_same_page(&s->base, s->pc_curr + 4);
+
+    tcg_gen_ld_i32(top, tcg_env, offsetof(CPUARMState, ras_top));
+    tcg_gen_addi_i32(top, top, 1);
+    tcg_gen_andi_i32(top, top, ARRAY_SIZE(((CPUARMState *)0)->ras) - 1);
+    tcg_gen_st_i32(top, tcg_env, offsetof(CPUARMState, ras_top));
+    ent = gen_ras_entry(top);
+    tcg_gen_st_i64(link, ent, RAS_ENTRY(pc));
+    tcg_gen_st_i64(tcg_constant_i64(same_page ? (uintptr_t)s->base.tb : 0),
+                   ent, RAS_ENTRY(tb));
+    tcg_gen_ld32u_i64(gen, tcg_env, RAS_TB_GEN);
+    tcg_gen_st_i64(gen, ent, RAS_ENTRY(gen));
+}
+
+/*
+ * A return to *target*, which cpu_pc already holds: pop, and when the top of
+ * the stack is this return and its caller has a valid ret_tc for the state
+ * this TB runs in, go there; when it has none yet, find it and write it down
+ * (helper_lookup_ret_ptr); otherwise look the target up as for any jump.
+ */
+static void gen_ras_return(DisasContext *s, TCGv_i64 target)
+{
+    TCGLabel *miss = gen_new_label(), *fill = gen_new_label();
+    TCGv_i32 top = tcg_temp_new_i32(), t32 = tcg_temp_new_i32();
+    TCGv_i32 rgen = tcg_temp_new_i32(), rgen2 = tcg_temp_new_i32();
+    TCGv_i64 t64 = tcg_temp_new_i64(), ctb = tcg_temp_new_i64();
+    TCGv_ptr ent, cptr = tcg_temp_new_ptr(), tc = tcg_temp_new_ptr();
+    const TranslationBlock *tb = s->base.tb;
+
+    tcg_gen_ld_i32(top, tcg_env, offsetof(CPUARMState, ras_top));
+    tcg_gen_subi_i32(t32, top, 1);
+    tcg_gen_andi_i32(t32, t32, ARRAY_SIZE(((CPUARMState *)0)->ras) - 1);
+    tcg_gen_st_i32(t32, tcg_env, offsetof(CPUARMState, ras_top));
+    ent = gen_ras_entry(top);
+
+    /* this return, pushed in this address space, by a TB that can say */
+    tcg_gen_ld_i64(t64, ent, RAS_ENTRY(pc));
+    tcg_gen_brcond_i64(TCG_COND_NE, t64, target, miss);
+    tcg_gen_ld_i64(t64, ent, RAS_ENTRY(gen));
+    tcg_gen_ld32u_i64(ctb, tcg_env, RAS_TB_GEN);
+    tcg_gen_brcond_i64(TCG_COND_NE, t64, ctb, miss);
+    tcg_gen_ld_i64(ctb, ent, RAS_ENTRY(tb));
+    tcg_gen_brcondi_i64(TCG_COND_EQ, ctb, 0, miss);
+    /* no breakpoints, as the jump-cache probe requires */
+    tcg_gen_ld_ptr(tc, tcg_env, offsetof(ArchCPU, parent_obj.breakpoints.tqh_first) -
+                   offsetof(ArchCPU, env));
+    tcg_gen_extu_ptr_i64(t64, tc);
+    tcg_gen_brcondi_i64(TCG_COND_NE, t64, 0, miss);
+
+    /* the caller's ret_tc, read like a seqlock */
+    tcg_gen_trunc_i64_ptr(cptr, ctb);
+    tcg_gen_ld_i32(rgen, cptr, offsetof(TranslationBlock, ret_gen));
+    tcg_gen_ld_ptr(tc, cptr, offsetof(TranslationBlock, ret_tc));
+    tcg_gen_ld_i32(t32, cptr, offsetof(TranslationBlock, ret_flags));
+    tcg_gen_brcondi_i32(TCG_COND_NE, t32, tb->flags, fill);
+    tcg_gen_ld_i64(t64, cptr, offsetof(TranslationBlock, ret_cs_base));
+    tcg_gen_brcondi_i64(TCG_COND_NE, t64, tb->cs_base, fill);
+    tcg_gen_ld_i32(t32, cptr, offsetof(TranslationBlock, ret_cflags));
+    tcg_gen_ld_i32(rgen2, tcg_env, offsetof(ArchCPU, parent_obj.tcg_cflags) -
+                   offsetof(ArchCPU, env));
+    tcg_gen_brcond_i32(TCG_COND_NE, t32, rgen2, fill);
+    tcg_gen_ld_i32(rgen2, cptr, offsetof(TranslationBlock, ret_gen));
+    tcg_gen_brcond_i32(TCG_COND_NE, rgen, rgen2, fill);
+    tcg_gen_ld_i32(rgen2, tcg_constant_ptr(&tb_ret_generation), 0);
+    tcg_gen_brcond_i32(TCG_COND_NE, rgen, rgen2, fill);
+    tcg_gen_st8_i32(tcg_constant_i32(1), tcg_env,
+                    offsetof(ArchCPU, parent_obj.neg.can_do_io) - offsetof(ArchCPU, env));
+    tcg_gen_goto_ptr(tc);
+
+    gen_set_label(fill);
+    gen_helper_lookup_ret_ptr(tc, tcg_env, cptr);
+    tcg_gen_goto_ptr(tc);
+
+    gen_set_label(miss);
+    gen_a64_lookup_and_goto_ptr(s);
+    s->base.is_jmp = DISAS_NORETURN;
+}
+
 static bool trans_BL(DisasContext *s, arg_i *a)
 {
     TCGv_i64 link = tcg_temp_new_i64();
@@ -1753,6 +1869,9 @@ static bool trans_BL(DisasContext *s, arg_i *a)
         gen_add_gcs_record(s, link);
     }
     tcg_gen_mov_i64(cpu_reg(s, 30), link);
+    if (ras_usable(s)) {
+        gen_ras_push(s, link);
+    }
 
     reset_btype(s);
     gen_goto_tb(s, 0, a->imm);
@@ -1944,6 +2063,9 @@ static bool trans_BLR(DisasContext *s, arg_r *a)
     }
     gen_a64_set_pc(s, cpu_reg(s, a->rn));
     tcg_gen_mov_i64(cpu_reg(s, 30), link);
+    if (ras_usable(s)) {
+        gen_ras_push(s, link);
+    }
 
     set_btype_for_blr(s);
     s->base.is_jmp = DISAS_JUMP;
@@ -1958,6 +2080,10 @@ static bool trans_RET(DisasContext *s, arg_r *a)
         gen_load_check_gcs_record(s, target, GCS_IT_RET_nPauth, a->rn);
     } else {
         gen_a64_set_pc(s, target);
+        if (ras_usable(s)) {
+            gen_ras_return(s, target);
+            return true;
+        }
     }
     s->base.is_jmp = DISAS_JUMP;
     return true;

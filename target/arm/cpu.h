@@ -248,6 +248,19 @@ typedef struct CPUArchState {
     /* Regs for A64 mode.  */
     uint64_t xregs[32];
     uint64_t pc;
+    /*
+     * A return-address stack (not architectural state): BL and BLR push,
+     * RET pops, and a RET to the address on top goes to the code its caller
+     * TB last returned to (TranslationBlock::ret_tc) without a lookup.
+     * See gen_ras_push() and gen_ras_return() in translate-a64.c.
+     */
+    struct {
+        uint64_t pc;        /* the address after the call */
+        uint64_t tb;        /* the TB that ends in the call, or 0 */
+        uint64_t gen;       /* CPUState::tb_ras_gen at the call */
+        uint64_t pad;
+    } ras[16];
+    uint32_t ras_top;
     /* PSTATE isn't an architectural register for ARMv8. However, it is
      * convenient for us to assemble the underlying state into a 64 bit format
      * identical to the architectural format used for the SPSR. (This is also

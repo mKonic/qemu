@@ -786,6 +786,7 @@ void tb_flush__exclusive_or_serial(void)
     tb_remove_all();
 
     tcg_region_reset_all();
+    qatomic_add(&tb_ret_generation, 2);
     /* XXX: flush processor icache at this point if cache flush is expensive */
     qatomic_inc(&tb_ctx.tb_flush_count);
     qemu_plugin_flush_cb();
@@ -919,6 +920,8 @@ static void tb_jmp_cache_inval_tb(TranslationBlock *tb)
  * In !user-mode, if @rm_from_page_list is set, call with the TB's pages'
  * locks held.
  */
+uint32_t tb_ret_generation = 2;
+
 static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
 {
     uint32_t h;
@@ -932,6 +935,8 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     qemu_spin_lock(&tb->jmp_lock);
     qatomic_set(&tb->cflags, tb->cflags | CF_INVALID);
     qemu_spin_unlock(&tb->jmp_lock);
+    /* ... nor returns predicted to it (TranslationBlock::ret_tc) */
+    qatomic_add(&tb_ret_generation, 2);
 
     /* remove the TB from the hash list */
     phys_pc = tb_page_addr0(tb);

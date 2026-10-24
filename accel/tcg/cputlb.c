@@ -156,6 +156,7 @@ static void tb_jmp_cache_clear_page(CPUState *cpu, vaddr page_addr)
         return;
     }
 
+    cpu->tb_ras_gen++;
     i0 = tb_jmp_cache_hash_page(page_addr);
     for (i = 0; i < TB_JMP_PAGE_SIZE; i++) {
         qatomic_set(&jc->array[i0 + i].tb, NULL);
@@ -424,6 +425,7 @@ void tlb_flush_switch_space(CPUState *cpu, vaddr tag)
     tlb_flush_by_mmuidx_work(cpu, ALL_MMUIDX_BITS, !cpu->tb_jmp_tag_stale);
     cpu->tb_jmp_tag = tag;
     cpu->tb_jmp_tag_stale = false;
+    cpu->tb_ras_gen++;
 }
 
 void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)

@@ -374,7 +374,7 @@ static inline bool check_for_breakpoints(CPUState *cpu, vaddr pc,
  * If found, return the code pointer.  If not found, return
  * the tcg epilogue so that we return into cpu_tb_exec.
  */
-const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+static TranslationBlock *lookup_next_tb(CPUArchState *env)
 {
     CPUState *cpu = env_cpu(env);
     TranslationBlock *tb;
@@ -417,14 +417,41 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
             tb = tb_lookup(cpu, t);
         }
     }
+    if (tb != NULL && qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
+        log_cpu_exec(s.pc, cpu, tb);
+    }
+    return tb;
+}
+
+const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+{
+    TranslationBlock *tb = lookup_next_tb(env);
+
+    return tb ? tb->tc.ptr : tcg_code_gen_epilogue;
+}
+
+/*
+ * helper_lookup_ret_ptr: helper_lookup_tb_ptr for a return the target
+ * predicted to the instruction after @caller's call, where @caller had no
+ * valid TranslationBlock::ret_tc yet: the TB found is written down there.
+ */
+const void *HELPER(lookup_ret_ptr)(CPUArchState *env, void *caller)
+{
+    TranslationBlock *ctb = caller;
+    uint32_t gen = qatomic_read(&tb_ret_generation);
+    TranslationBlock *tb = lookup_next_tb(env);
+
     if (tb == NULL) {
         return tcg_code_gen_epilogue;
     }
-
-    if (qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
-        log_cpu_exec(s.pc, cpu, tb);
-    }
-
+    qatomic_set(&ctb->ret_gen, TB_RET_GEN_WRITING);
+    smp_wmb();
+    qatomic_set(&ctb->ret_tc, tb->tc.ptr);
+    qatomic_set(&ctb->ret_cs_base, tb->cs_base);
+    qatomic_set(&ctb->ret_flags, tb->flags);
+    qatomic_set(&ctb->ret_cflags, tb_cflags(tb));
+    smp_wmb();
+    qatomic_set(&ctb->ret_gen, gen);
     return tb->tc.ptr;
 }
 

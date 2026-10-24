@@ -452,6 +452,9 @@ struct qemu_work_item;
  *      apart by an ID (see tlb_flush_switch_space()). 0 otherwise.
  * @tb_jmp_tag_stale: The jump cache was emptied since @tb_jmp_tag was set,
  *      by a TLB flush that may have come with a change of address space.
+ * @tb_ras_gen: Changed whenever the jump cache is emptied in whole or part
+ *      and at every switch of address space: a target's return-address stack
+ *      keeps it with each entry, and trusts no entry made before a change.
  * @gdb_regs: Additional GDB registers.
  * @gdb_num_regs: Number of total registers accessible to GDB.
  * @gdb_num_g_regs: Number of registers in GDB 'g' packets.
@@ -527,6 +530,7 @@ struct CPUState {
     struct CPUJumpCache *tb_jmp_cache;
     vaddr tb_jmp_tag;
     bool tb_jmp_tag_stale;
+    uint32_t tb_ras_gen;
 
     GArray *gdb_regs;
     int gdb_num_regs;
