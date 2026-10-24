@@ -537,6 +537,26 @@ static inline bool use_goto_tb(DisasContext *s, uint64_t dest)
     return translator_use_goto_tb(&s->base, dest);
 }
 
+/*
+ * Jump to the TB for the pc in cpu_pc.  Without BTI, arm_get_tb_cpu_state()
+ * looks it up with env->hflags as they are cached, as long as software
+ * single-step is off (PSTATE__SS) and the state is AArch64: the backend's
+ * jump-cache probe can then do the lookup.
+ */
+static void gen_a64_lookup_and_goto_ptr(DisasContext *s)
+{
+    if (dc_isar_feature(aa64_bti, s)) {
+        tcg_gen_lookup_and_goto_ptr();
+        return;
+    }
+    translator_set_lookup_state(offsetof(CPUARMState, pc),
+                                offsetof(CPUARMState, hflags.flags),
+                                offsetof(CPUARMState, hflags.flags2),
+                                R_TBFLAG_ANY_SS_ACTIVE_MASK,
+                                R_TBFLAG_ANY_AARCH64_STATE_MASK);
+    translator_lookup_and_goto_ptr();
+}
+
 static void gen_goto_tb(DisasContext *s, unsigned tb_slot_idx, int64_t diff)
 {
     if (use_goto_tb(s, s->pc_curr + diff)) {
@@ -562,7 +582,7 @@ static void gen_goto_tb(DisasContext *s, unsigned tb_slot_idx, int64_t diff)
         if (s->ss_active) {
             gen_step_complete_exception(s);
         } else {
-            tcg_gen_lookup_and_goto_ptr();
+            gen_a64_lookup_and_goto_ptr(s);
             s->base.is_jmp = DISAS_NORETURN;
         }
     }
@@ -11250,7 +11270,7 @@ static void aarch64_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
             gen_a64_update_pc(dc, 4);
             /* fall through */
         case DISAS_JUMP:
-            tcg_gen_lookup_and_goto_ptr();
+            gen_a64_lookup_and_goto_ptr(dc);
             break;
         case DISAS_NORETURN:
         case DISAS_SWI:
