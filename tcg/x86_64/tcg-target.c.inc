@@ -4493,12 +4493,20 @@ static void tcg_out_lookup_stub(TCGContext *s)
     tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_ADD << 3) + P_REXW, TCG_REG_ESI, TCG_AREG0,
                          cpu + offsetof(CPUState, tb_jmp_cache));
 
+    /* rdi = tb_jmp_cache_key(cpu->tb_jmp_tag, pc) */
+    tcg_out_mov(s, TCG_TYPE_I64, TCG_REG_EDI, TCG_REG_EAX);
+    tcg_out_shifti(s, SHIFT_SAR + P_REXW, TCG_REG_EDI, 63);
+    tcg_out_modrm(s, OPC_GRP3_Ev + P_REXW, EXT3_NOT, TCG_REG_EDI);
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_AND << 3) + P_REXW, TCG_REG_EDI, TCG_AREG0,
+                         cpu + offsetof(CPUState, tb_jmp_tag));
+    tgen_arithr(s, ARITH_XOR + P_REXW, TCG_REG_EDI, TCG_REG_EAX);
+
     /* tb_lookup()'s test of the entry: rdx = tb */
     tcg_out_modrm_offset(s, OPC_MOVL_GvEv + P_REXW, TCG_REG_EDX, TCG_REG_ESI,
                          offsetof(CPUJumpCache, array[0].tb));
     tcg_out_modrm(s, OPC_TESTL + P_REXW, TCG_REG_EDX, TCG_REG_EDX);
     LOOKUP_MISS(JCC_JE);
-    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3) + P_REXW, TCG_REG_EAX, TCG_REG_ESI,
+    tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3) + P_REXW, TCG_REG_EDI, TCG_REG_ESI,
                          offsetof(CPUJumpCache, array[0].pc));
     LOOKUP_MISS(JCC_JNE);
     tcg_out_modrm_offset(s, OPC_ARITH_GvEv + (ARITH_CMP << 3), TCG_REG_R10, TCG_REG_EDX,

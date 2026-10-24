@@ -127,6 +127,23 @@ void tlb_flush_page_all_cpus_synced(CPUState *src, vaddr addr);
 void tlb_flush(CPUState *cpu);
 
 /**
+ * tlb_flush_switch_space:
+ * @cpu: CPU whose TLB should be flushed
+ * @tag: the address space switched to (an ASID, say, placed in bits the
+ *       addresses of the lower half of the address space do not use)
+ *
+ * Flush the entire TLB of @cpu, as tlb_flush() does, for a switch to the
+ * address space @tag, but keep the jump cache: its entries for the lower
+ * half of the address space are told apart by the address space they were
+ * made in, so those of the address space switched from stay valid for when
+ * it comes back.  Only for a guest whose address spaces are told apart by
+ * an ID, where a switch alone invalidates nothing, and only when the upper
+ * half of the address space is the same in all of them.  Must be called
+ * from @cpu's own thread.
+ */
+void tlb_flush_switch_space(CPUState *cpu, vaddr tag);
+
+/**
  * tlb_flush_all_cpus_synced:
  * @cpu: src CPU of the flush
  *
@@ -234,6 +251,9 @@ static inline void tlb_flush_page_all_cpus_synced(CPUState *src, vaddr addr)
 {
 }
 static inline void tlb_flush(CPUState *cpu)
+{
+}
+static inline void tlb_flush_switch_space(CPUState *cpu, vaddr tag)
 {
 }
 static inline void tlb_flush_all_cpus_synced(CPUState *src_cpu)

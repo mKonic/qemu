@@ -367,9 +367,9 @@ static void flush_all_helper(CPUState *src, run_on_cpu_func fn,
     }
 }
 
-static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
+static void tlb_flush_by_mmuidx_work(CPUState *cpu, MMUIdxMap asked,
+                                     bool keep_jmp_cache)
 {
-    MMUIdxMap asked = data.host_int;
     MMUIdxMap all_dirty, work, to_clean;
     int64_t now = get_clock_realtime();
 
@@ -391,7 +391,11 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
 
     qemu_spin_unlock(&cpu->neg.tlb.c.lock);
 
-    tcg_flush_jmp_cache(cpu);
+    if (!keep_jmp_cache) {
+        /* this flush may be a switch of address space: tb_jmp_tag may be wrong */
+        tcg_flush_jmp_cache(cpu);
+        cpu->tb_jmp_tag_stale = true;
+    }
 
     if (to_clean == ALL_MMUIDX_BITS) {
         qatomic_set(&cpu->neg.tlb.c.full_flush_count,
@@ -405,6 +409,21 @@ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
                         ctpop16(asked & ~to_clean));
         }
     }
+}
+
+static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
+{
+    tlb_flush_by_mmuidx_work(cpu, data.host_int, false);
+}
+
+void tlb_flush_switch_space(CPUState *cpu, vaddr tag)
+{
+    assert_cpu_is_self(cpu);
+
+    /* entries kept under the old tag are only found again with it */
+    tlb_flush_by_mmuidx_work(cpu, ALL_MMUIDX_BITS, !cpu->tb_jmp_tag_stale);
+    cpu->tb_jmp_tag = tag;
+    cpu->tb_jmp_tag_stale = false;
 }
 
 void tlb_flush_by_mmuidx(CPUState *cpu, MMUIdxMap idxmap)

@@ -446,6 +446,12 @@ struct qemu_work_item;
  *            AddressSpaces this CPU has)
  * @as: Pointer to the first AddressSpace, for the convenience of targets which
  *      only have a single AddressSpace
+ * @tb_jmp_tag: Mixed into the key of the jump cache entries for addresses in
+ *      the lower half of the address space (top bit clear): a tag of the
+ *      address space they belong to, for targets that tell address spaces
+ *      apart by an ID (see tlb_flush_switch_space()). 0 otherwise.
+ * @tb_jmp_tag_stale: The jump cache was emptied since @tb_jmp_tag was set,
+ *      by a TLB flush that may have come with a change of address space.
  * @gdb_regs: Additional GDB registers.
  * @gdb_num_regs: Number of total registers accessible to GDB.
  * @gdb_num_g_regs: Number of registers in GDB 'g' packets.
@@ -519,6 +525,8 @@ struct CPUState {
     MemoryRegion *memory;
 
     struct CPUJumpCache *tb_jmp_cache;
+    vaddr tb_jmp_tag;
+    bool tb_jmp_tag_stale;
 
     GArray *gdb_regs;
     int gdb_num_regs;
